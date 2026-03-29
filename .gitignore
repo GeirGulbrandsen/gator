@@ -32,3 +32,4 @@ coverage.out
 # Editor/IDE files
 .vscode/
 .idea/
+/gator

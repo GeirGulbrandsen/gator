@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"io"
 	"os"
@@ -27,6 +28,8 @@ type fakeDB struct {
 	deleteFeedFollowFn      func(context.Context, database.DeleteFeedFollowParams) error
 	markFeedFetchedFn       func(context.Context, uuid.UUID) error
 	getNextFeedToFetchFn    func(context.Context) (database.Feed, error)
+	createPostFn            func(context.Context, database.CreatePostParams) error
+	getPostsForUserFn       func(context.Context, database.GetPostsForUserParams) ([]database.GetPostsForUserRow, error)
 
 	createFeedCalls            []database.CreateFeedParams
 	createFeedFollowCalls      []database.CreateFeedFollowParams
@@ -34,6 +37,8 @@ type fakeDB struct {
 	getFeedFollowsForUserCalls []uuid.UUID
 	deleteFeedFollowCalls      []database.DeleteFeedFollowParams
 	markFeedFetchedCalls       []uuid.UUID
+	createPostCalls            []database.CreatePostParams
+	getPostsForUserCalls       []database.GetPostsForUserParams
 	resetUsersCalled           bool
 }
 
@@ -128,6 +133,22 @@ func (f *fakeDB) GetNextFeedToFetch(ctx context.Context) (database.Feed, error) 
 	return database.Feed{}, errors.New("not implemented")
 }
 
+func (f *fakeDB) CreatePost(ctx context.Context, params database.CreatePostParams) error {
+	f.createPostCalls = append(f.createPostCalls, params)
+	if f.createPostFn != nil {
+		return f.createPostFn(ctx, params)
+	}
+	return nil
+}
+
+func (f *fakeDB) GetPostsForUser(ctx context.Context, params database.GetPostsForUserParams) ([]database.GetPostsForUserRow, error) {
+	f.getPostsForUserCalls = append(f.getPostsForUserCalls, params)
+	if f.getPostsForUserFn != nil {
+		return f.getPostsForUserFn(ctx, params)
+	}
+	return nil, errors.New("not implemented")
+}
+
 func captureOutput(t *testing.T, fn func()) string {
 	t.Helper()
 
@@ -208,6 +229,11 @@ func TestHandlerArgValidation(t *testing.T) {
 			name:    "unfollow requires url",
 			handler: middlewareLoggedIn(handlerUnfollow),
 			cmd:     command{name: "unfollow", args: []string{}},
+		},
+		{
+			name:    "browse takes at most one arg",
+			handler: middlewareLoggedIn(handlerBrowse),
+			cmd:     command{name: "browse", args: []string{"1", "2"}},
 		},
 	}
 
@@ -468,5 +494,41 @@ func TestHandlerUnfollowDeletesFeedFollowByUserAndFeedID(t *testing.T) {
 	}
 	if fdb.deleteFeedFollowCalls[0].FeedID != feedID {
 		t.Fatalf("expected delete feed id %s, got %s", feedID, fdb.deleteFeedFollowCalls[0].FeedID)
+	}
+}
+
+func TestHandlerBrowseDefaultsToLimitTwo(t *testing.T) {
+	currentUserID := uuid.New()
+	fdb := &fakeDB{
+		getUserFn: func(context.Context, string) (database.User, error) {
+			return database.User{ID: currentUserID, Name: "alice"}, nil
+		},
+		getPostsForUserFn: func(_ context.Context, params database.GetPostsForUserParams) ([]database.GetPostsForUserRow, error) {
+			if params.Limit != 2 {
+				t.Fatalf("expected default limit 2, got %d", params.Limit)
+			}
+			return []database.GetPostsForUserRow{{
+				Title:       "A post",
+				Url:         "https://example.com/post",
+				Description: sql.NullString{String: "desc", Valid: true},
+				PublishedAt: time.Now(),
+				FeedName:    "Feed One",
+			}}, nil
+		},
+	}
+	s := &state{db: fdb, cfg: &config.Config{CurrentUserName: "alice"}}
+
+	out := captureOutput(t, func() {
+		err := middlewareLoggedIn(handlerBrowse)(s, command{name: "browse"})
+		if err != nil {
+			t.Fatalf("handlerBrowse returned error: %v", err)
+		}
+	})
+
+	if len(fdb.getPostsForUserCalls) != 1 || fdb.getPostsForUserCalls[0].UserID != currentUserID {
+		t.Fatalf("expected GetPostsForUser to be called with current user, got %+v", fdb.getPostsForUserCalls)
+	}
+	if !strings.Contains(out, "title: A post") || !strings.Contains(out, "feed: Feed One") {
+		t.Fatalf("expected browse output to include post details, got: %q", out)
 	}
 }

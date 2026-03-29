@@ -7,14 +7,19 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/geirgulbrandsen/gator/internal/config"
 	"github.com/geirgulbrandsen/gator/internal/database"
 	"github.com/geirgulbrandsen/gator/internal/rss"
 	"github.com/google/uuid"
-	_ "github.com/lib/pq"
+	"github.com/lib/pq"
 )
+
+var htmlTagRe = regexp.MustCompile(`<[^>]+>`)
 
 type state struct {
 	db  db
@@ -34,6 +39,8 @@ type db interface {
 	DeleteFeedFollow(context.Context, database.DeleteFeedFollowParams) error
 	MarkFeedFetched(context.Context, uuid.UUID) error
 	GetNextFeedToFetch(context.Context) (database.Feed, error)
+	CreatePost(context.Context, database.CreatePostParams) error
+	GetPostsForUser(context.Context, database.GetPostsForUserParams) ([]database.GetPostsForUserRow, error)
 }
 
 type command struct {
@@ -138,27 +145,87 @@ func handlerReset(s *state, cmd command) error {
 }
 
 func scrapeFeeds(s *state) {
-	feed, err := s.db.GetNextFeedToFetch(context.Background())
+	ctx := context.Background()
+	feed, err := s.db.GetNextFeedToFetch(ctx)
 	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			fmt.Println("no feeds to fetch")
+			return
+		}
+
 		fmt.Printf("error getting next feed to fetch: %v\n", err)
 		return
 	}
 
-	if err := s.db.MarkFeedFetched(context.Background(), feed.ID); err != nil {
+	if err := s.db.MarkFeedFetched(ctx, feed.ID); err != nil {
 		fmt.Printf("error marking feed fetched: %v\n", err)
 		return
 	}
 
 	fmt.Printf("Fetching feed: %s (%s)\n", feed.Name, feed.Url)
-	rssFeed, err := rss.FetchFeed(context.Background(), feed.Url)
+	rssFeed, err := rss.FetchFeed(ctx, feed.Url)
 	if err != nil {
 		fmt.Printf("error fetching feed %s: %v\n", feed.Url, err)
 		return
 	}
 
+	now := time.Now().UTC()
 	for _, item := range rssFeed.Channel.Item {
-		fmt.Printf("  - %s\n", item.Title)
+		title := stripHTML(item.Title)
+		descriptionText := stripHTML(item.Description)
+		description := sql.NullString{String: descriptionText, Valid: descriptionText != ""}
+		publishedAt := parsePublishedAt(item.PubDate)
+
+		err := s.db.CreatePost(ctx, database.CreatePostParams{
+			ID:          uuid.New(),
+			CreatedAt:   now,
+			UpdatedAt:   now,
+			Title:       title,
+			Url:         strings.TrimSpace(item.Link),
+			Description: description,
+			PublishedAt: publishedAt,
+			FeedID:      feed.ID,
+		})
+		if err != nil {
+			var pqErr *pq.Error
+			if errors.As(err, &pqErr) && pqErr.Code == "23505" {
+				continue
+			}
+
+			log.Printf("create post for %q failed: %v", item.Link, err)
+			continue
+		}
+
+		fmt.Printf("  - saved: %s\n", title)
 	}
+}
+
+func stripHTML(value string) string {
+	withoutTags := htmlTagRe.ReplaceAllString(value, " ")
+	return strings.Join(strings.Fields(withoutTags), " ")
+}
+
+func parsePublishedAt(value string) time.Time {
+	layouts := []string{
+		time.RFC1123Z,
+		time.RFC1123,
+		time.RFC822Z,
+		time.RFC822,
+		time.RFC3339,
+		time.RFC3339Nano,
+		"Mon, 2 Jan 2006 15:04:05 -0700",
+		"Mon, 2 Jan 2006 15:04:05 MST",
+	}
+
+	for _, layout := range layouts {
+		parsed, err := time.Parse(layout, value)
+		if err == nil {
+			return parsed.UTC()
+		}
+	}
+
+	log.Printf("could not parse published date %q, defaulting to now", value)
+	return time.Now().UTC()
 }
 
 func handlerAgg(s *state, cmd command) error {
@@ -327,6 +394,41 @@ func handlerFeeds(s *state, cmd command) error {
 	return nil
 }
 
+func handlerBrowse(s *state, cmd command, user database.User) error {
+	if len(cmd.args) > 1 {
+		return errors.New("usage: browse [limit]")
+	}
+
+	limit := int32(2)
+	if len(cmd.args) == 1 {
+		parsedLimit, err := strconv.Atoi(cmd.args[0])
+		if err != nil || parsedLimit <= 0 {
+			return fmt.Errorf("invalid limit %q", cmd.args[0])
+		}
+		limit = int32(parsedLimit)
+	}
+
+	posts, err := s.db.GetPostsForUser(context.Background(), database.GetPostsForUserParams{
+		UserID: user.ID,
+		Limit:  limit,
+	})
+	if err != nil {
+		return fmt.Errorf("get posts for user: %w", err)
+	}
+
+	for _, post := range posts {
+		fmt.Printf("title: %s\n", stripHTML(post.Title))
+		fmt.Printf("url: %s\n", post.Url)
+		if post.Description.Valid {
+			fmt.Printf("description: %s\n", stripHTML(post.Description.String))
+		}
+		fmt.Printf("published_at: %s\n", post.PublishedAt)
+		fmt.Printf("feed: %s\n\n", post.FeedName)
+	}
+
+	return nil
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, "not enough arguments provided")
@@ -366,6 +468,7 @@ func main() {
 	cmds.register("follow", middlewareLoggedIn(handlerFollow))
 	cmds.register("following", middlewareLoggedIn(handlerFollowing))
 	cmds.register("unfollow", middlewareLoggedIn(handlerUnfollow))
+	cmds.register("browse", middlewareLoggedIn(handlerBrowse))
 
 	cmd := command{
 		name: os.Args[1],
