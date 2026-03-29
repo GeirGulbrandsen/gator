@@ -158,12 +158,12 @@ func TestHandlerArgValidation(t *testing.T) {
 		},
 		{
 			name:    "addfeed requires name and url",
-			handler: handlerAddFeed,
+			handler: middlewareLoggedIn(handlerAddFeed),
 			cmd:     command{name: "addfeed", args: []string{"only-name"}},
 		},
 		{
 			name:    "follow requires url",
-			handler: handlerFollow,
+			handler: middlewareLoggedIn(handlerFollow),
 			cmd:     command{name: "follow", args: []string{}},
 		},
 		{
@@ -173,7 +173,7 @@ func TestHandlerArgValidation(t *testing.T) {
 		},
 		{
 			name:    "following takes no args",
-			handler: handlerFollowing,
+			handler: middlewareLoggedIn(handlerFollowing),
 			cmd:     command{name: "following", args: []string{"extra"}},
 		},
 	}
@@ -198,6 +198,32 @@ func TestHandlerResetCallsDB(t *testing.T) {
 
 	if !fdb.resetUsersCalled {
 		t.Fatal("expected ResetUsers to be called")
+	}
+}
+
+func TestMiddlewareLoggedInLoadsUser(t *testing.T) {
+	currentUser := database.User{ID: uuid.New(), Name: "alice"}
+	fdb := &fakeDB{
+		getUserFn: func(context.Context, string) (database.User, error) {
+			return currentUser, nil
+		},
+	}
+	s := &state{db: fdb, cfg: &config.Config{CurrentUserName: "alice"}}
+
+	called := false
+	handler := middlewareLoggedIn(func(_ *state, _ command, user database.User) error {
+		called = true
+		if user.ID != currentUser.ID {
+			t.Fatalf("expected user id %s, got %s", currentUser.ID, user.ID)
+		}
+		return nil
+	})
+
+	if err := handler(s, command{name: "test"}); err != nil {
+		t.Fatalf("middlewareLoggedIn returned error: %v", err)
+	}
+	if !called {
+		t.Fatal("expected wrapped handler to be called")
 	}
 }
 
@@ -248,7 +274,7 @@ func TestHandlerAddFeedAutoCreatesFollow(t *testing.T) {
 	}
 	s := &state{db: fdb, cfg: &config.Config{CurrentUserName: "alice"}}
 
-	err := handlerAddFeed(s, command{name: "addfeed", args: []string{"Changelog", "https://example.com/rss"}})
+	err := middlewareLoggedIn(handlerAddFeed)(s, command{name: "addfeed", args: []string{"Changelog", "https://example.com/rss"}})
 	if err != nil {
 		t.Fatalf("handlerAddFeed returned error: %v", err)
 	}
@@ -286,7 +312,7 @@ func TestHandlerFollowLooksUpFeedByURLAndCreatesFollow(t *testing.T) {
 	}
 	s := &state{db: fdb, cfg: &config.Config{CurrentUserName: "alice"}}
 
-	err := handlerFollow(s, command{name: "follow", args: []string{url}})
+	err := middlewareLoggedIn(handlerFollow)(s, command{name: "follow", args: []string{url}})
 	if err != nil {
 		t.Fatalf("handlerFollow returned error: %v", err)
 	}
@@ -318,7 +344,7 @@ func TestHandlerFollowingPrintsFeedNamesForCurrentUser(t *testing.T) {
 	s := &state{db: fdb, cfg: &config.Config{CurrentUserName: "alice"}}
 
 	out := captureOutput(t, func() {
-		err := handlerFollowing(s, command{name: "following"})
+		err := middlewareLoggedIn(handlerFollowing)(s, command{name: "following"})
 		if err != nil {
 			t.Fatalf("handlerFollowing returned error: %v", err)
 		}
@@ -369,7 +395,7 @@ func TestHandlerAddFeedReturnsErrorWhenAutoFollowFails(t *testing.T) {
 	}
 	s := &state{db: fdb, cfg: &config.Config{CurrentUserName: "alice"}}
 
-	err := handlerAddFeed(s, command{name: "addfeed", args: []string{"Blog", "https://blog.example.com/rss"}})
+	err := middlewareLoggedIn(handlerAddFeed)(s, command{name: "addfeed", args: []string{"Blog", "https://blog.example.com/rss"}})
 	if err == nil {
 		t.Fatal("expected error when auto follow fails")
 	}
