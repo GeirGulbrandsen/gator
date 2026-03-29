@@ -173,6 +173,25 @@ func handlerAddFeed(s *state, cmd command) error {
 	return nil
 }
 
+func handlerFeeds(s *state, cmd command) error {
+	if len(cmd.args) != 0 {
+		return errors.New("usage: feeds")
+	}
+
+	feeds, err := s.db.GetFeeds(context.Background())
+	if err != nil {
+		return fmt.Errorf("get feeds: %w", err)
+	}
+
+	for _, feed := range feeds {
+		fmt.Printf("name: %s\n", feed.FeedName)
+		fmt.Printf("url: %s\n", feed.Url)
+		fmt.Printf("user: %s\n\n", feed.UserName)
+	}
+
+	return nil
+}
+
 func main() {
 	if len(os.Args) < 2 {
 		fmt.Fprintln(os.Stderr, "not enough arguments provided")
@@ -208,6 +227,7 @@ func main() {
 	cmds.register("reset", handlerReset)
 	cmds.register("users", handlerUsers)
 	cmds.register("addfeed", handlerAddFeed)
+	cmds.register("feeds", handlerFeeds)
 
 	cmd := command{
 		name: os.Args[1],
