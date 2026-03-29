@@ -25,12 +25,15 @@ type fakeDB struct {
 	createFeedFollowFn      func(context.Context, database.CreateFeedFollowParams) (database.CreateFeedFollowRow, error)
 	getFeedFollowsForUserFn func(context.Context, uuid.UUID) ([]database.GetFeedFollowsForUserRow, error)
 	deleteFeedFollowFn      func(context.Context, database.DeleteFeedFollowParams) error
+	markFeedFetchedFn       func(context.Context, uuid.UUID) error
+	getNextFeedToFetchFn    func(context.Context) (database.Feed, error)
 
 	createFeedCalls            []database.CreateFeedParams
 	createFeedFollowCalls      []database.CreateFeedFollowParams
 	getFeedByURLCalls          []string
 	getFeedFollowsForUserCalls []uuid.UUID
 	deleteFeedFollowCalls      []database.DeleteFeedFollowParams
+	markFeedFetchedCalls       []uuid.UUID
 	resetUsersCalled           bool
 }
 
@@ -108,6 +111,21 @@ func (f *fakeDB) DeleteFeedFollow(ctx context.Context, params database.DeleteFee
 		return f.deleteFeedFollowFn(ctx, params)
 	}
 	return nil
+}
+
+func (f *fakeDB) MarkFeedFetched(ctx context.Context, id uuid.UUID) error {
+	f.markFeedFetchedCalls = append(f.markFeedFetchedCalls, id)
+	if f.markFeedFetchedFn != nil {
+		return f.markFeedFetchedFn(ctx, id)
+	}
+	return nil
+}
+
+func (f *fakeDB) GetNextFeedToFetch(ctx context.Context) (database.Feed, error) {
+	if f.getNextFeedToFetchFn != nil {
+		return f.getNextFeedToFetchFn(ctx)
+	}
+	return database.Feed{}, errors.New("not implemented")
 }
 
 func captureOutput(t *testing.T, fn func()) string {

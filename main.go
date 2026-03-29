@@ -32,6 +32,8 @@ type db interface {
 	CreateFeedFollow(context.Context, database.CreateFeedFollowParams) (database.CreateFeedFollowRow, error)
 	GetFeedFollowsForUser(context.Context, uuid.UUID) ([]database.GetFeedFollowsForUserRow, error)
 	DeleteFeedFollow(context.Context, database.DeleteFeedFollowParams) error
+	MarkFeedFetched(context.Context, uuid.UUID) error
+	GetNextFeedToFetch(context.Context) (database.Feed, error)
 }
 
 type command struct {
@@ -135,14 +137,46 @@ func handlerReset(s *state, cmd command) error {
 	return nil
 }
 
-func handlerAgg(s *state, cmd command) error {
-	feed, err := rss.FetchFeed(context.Background(), "https://www.wagslane.dev/index.xml")
+func scrapeFeeds(s *state) {
+	feed, err := s.db.GetNextFeedToFetch(context.Background())
 	if err != nil {
-		return fmt.Errorf("fetching feed: %w", err)
+		fmt.Printf("error getting next feed to fetch: %v\n", err)
+		return
 	}
 
-	fmt.Printf("%+v\n", feed)
-	return nil
+	if err := s.db.MarkFeedFetched(context.Background(), feed.ID); err != nil {
+		fmt.Printf("error marking feed fetched: %v\n", err)
+		return
+	}
+
+	fmt.Printf("Fetching feed: %s (%s)\n", feed.Name, feed.Url)
+	rssFeed, err := rss.FetchFeed(context.Background(), feed.Url)
+	if err != nil {
+		fmt.Printf("error fetching feed %s: %v\n", feed.Url, err)
+		return
+	}
+
+	for _, item := range rssFeed.Channel.Item {
+		fmt.Printf("  - %s\n", item.Title)
+	}
+}
+
+func handlerAgg(s *state, cmd command) error {
+	if len(cmd.args) != 1 {
+		return errors.New("usage: agg <time_between_reqs>")
+	}
+
+	timeBetweenRequests, err := time.ParseDuration(cmd.args[0])
+	if err != nil {
+		return fmt.Errorf("invalid duration %q: %w", cmd.args[0], err)
+	}
+
+	fmt.Printf("Collecting feeds every %s\n", timeBetweenRequests)
+
+	ticker := time.NewTicker(timeBetweenRequests)
+	for ; ; <-ticker.C {
+		scrapeFeeds(s)
+	}
 }
 
 func handlerUsers(s *state, cmd command) error {
