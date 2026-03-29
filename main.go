@@ -17,8 +17,20 @@ import (
 )
 
 type state struct {
-	db  *database.Queries
+	db  db
 	cfg *config.Config
+}
+
+type db interface {
+	GetUser(context.Context, string) (database.User, error)
+	CreateUser(context.Context, database.CreateUserParams) (database.User, error)
+	ResetUsers(context.Context) error
+	GetUsers(context.Context) ([]database.User, error)
+	CreateFeed(context.Context, database.CreateFeedParams) (database.Feed, error)
+	GetFeeds(context.Context) ([]database.GetFeedsRow, error)
+	GetFeedByURL(context.Context, string) (database.Feed, error)
+	CreateFeedFollow(context.Context, database.CreateFeedFollowParams) (database.CreateFeedFollowRow, error)
+	GetFeedFollowsForUser(context.Context, uuid.UUID) ([]database.GetFeedFollowsForUserRow, error)
 }
 
 type command struct {
