@@ -11,6 +11,7 @@ import (
 
 	"github.com/geirgulbrandsen/gator/internal/config"
 	"github.com/geirgulbrandsen/gator/internal/database"
+	"github.com/geirgulbrandsen/gator/internal/rss"
 	"github.com/google/uuid"
 	_ "github.com/lib/pq"
 )
@@ -110,6 +111,16 @@ func handlerReset(s *state, cmd command) error {
 	return nil
 }
 
+func handlerAgg(s *state, cmd command) error {
+	feed, err := rss.FetchFeed(context.Background(), "https://www.wagslane.dev/index.xml")
+	if err != nil {
+		return fmt.Errorf("fetching feed: %w", err)
+	}
+
+	fmt.Printf("%+v\n", feed)
+	return nil
+}
+
 func handlerUsers(s *state, cmd command) error {
 	users, err := s.db.GetUsers(context.Background())
 	if err != nil {
@@ -158,6 +169,7 @@ func main() {
 		handlers: make(map[string]func(*state, command) error),
 	}
 	cmds.register("login", handlerLogin)
+	cmds.register("agg", handlerAgg)
 	cmds.register("register", handlerRegister)
 	cmds.register("reset", handlerReset)
 	cmds.register("users", handlerUsers)
