@@ -163,12 +163,80 @@ func handlerAddFeed(s *state, cmd command) error {
 		return fmt.Errorf("create feed: %w", err)
 	}
 
+	_, err = s.db.CreateFeedFollow(ctx, database.CreateFeedFollowParams{
+		ID:        uuid.New(),
+		CreatedAt: now,
+		UpdatedAt: now,
+		UserID:    currentUser.ID,
+		FeedID:    feed.ID,
+	})
+	if err != nil {
+		return fmt.Errorf("auto follow feed: %w", err)
+	}
+
 	fmt.Printf("id: %s\n", feed.ID)
 	fmt.Printf("created_at: %s\n", feed.CreatedAt)
 	fmt.Printf("updated_at: %s\n", feed.UpdatedAt)
 	fmt.Printf("name: %s\n", feed.Name)
 	fmt.Printf("url: %s\n", feed.Url)
 	fmt.Printf("user_id: %s\n", feed.UserID)
+
+	return nil
+}
+
+func handlerFollow(s *state, cmd command) error {
+	if len(cmd.args) != 1 {
+		return errors.New("usage: follow <url>")
+	}
+
+	ctx := context.Background()
+	currentUser, err := s.db.GetUser(ctx, s.cfg.CurrentUserName)
+	if err != nil {
+		return fmt.Errorf("get current user: %w", err)
+	}
+
+	feed, err := s.db.GetFeedByURL(ctx, cmd.args[0])
+	if err != nil {
+		return fmt.Errorf("get feed by url: %w", err)
+	}
+
+	now := time.Now().UTC()
+	feedFollow, err := s.db.CreateFeedFollow(ctx, database.CreateFeedFollowParams{
+		ID:        uuid.New(),
+		CreatedAt: now,
+		UpdatedAt: now,
+		UserID:    currentUser.ID,
+		FeedID:    feed.ID,
+	})
+	if err != nil {
+		return fmt.Errorf("create feed follow: %w", err)
+	}
+
+	fmt.Printf("feed: %s\n", feedFollow.FeedName)
+	fmt.Printf("user: %s\n", feedFollow.UserName)
+
+	return nil
+}
+
+func handlerFollowing(s *state, cmd command) error {
+	if len(cmd.args) != 0 {
+		return errors.New("usage: following")
+	}
+
+	ctx := context.Background()
+	currentUser, err := s.db.GetUser(ctx, s.cfg.CurrentUserName)
+	if err != nil {
+		return fmt.Errorf("get current user: %w", err)
+	}
+
+	feedFollows, err := s.db.GetFeedFollowsForUser(ctx, currentUser.ID)
+	if err != nil {
+		return fmt.Errorf("get follows for user: %w", err)
+	}
+
+	for _, feedFollow := range feedFollows {
+		fmt.Printf("* %s\n", feedFollow.FeedName)
+	}
 
 	return nil
 }
@@ -228,6 +296,8 @@ func main() {
 	cmds.register("users", handlerUsers)
 	cmds.register("addfeed", handlerAddFeed)
 	cmds.register("feeds", handlerFeeds)
+	cmds.register("follow", handlerFollow)
+	cmds.register("following", handlerFollowing)
 
 	cmd := command{
 		name: os.Args[1],
