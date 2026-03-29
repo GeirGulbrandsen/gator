@@ -31,6 +31,7 @@ type db interface {
 	GetFeedByURL(context.Context, string) (database.Feed, error)
 	CreateFeedFollow(context.Context, database.CreateFeedFollowParams) (database.CreateFeedFollowRow, error)
 	GetFeedFollowsForUser(context.Context, uuid.UUID) ([]database.GetFeedFollowsForUserRow, error)
+	DeleteFeedFollow(context.Context, database.DeleteFeedFollowParams) error
 }
 
 type command struct {
@@ -249,6 +250,30 @@ func handlerFollowing(s *state, cmd command, user database.User) error {
 	return nil
 }
 
+func handlerUnfollow(s *state, cmd command, user database.User) error {
+	if len(cmd.args) != 1 {
+		return errors.New("usage: unfollow <url>")
+	}
+
+	ctx := context.Background()
+	feed, err := s.db.GetFeedByURL(ctx, cmd.args[0])
+	if err != nil {
+		return fmt.Errorf("get feed by url: %w", err)
+	}
+
+	err = s.db.DeleteFeedFollow(ctx, database.DeleteFeedFollowParams{
+		UserID: user.ID,
+		FeedID: feed.ID,
+	})
+	if err != nil {
+		return fmt.Errorf("delete feed follow: %w", err)
+	}
+
+	fmt.Printf("unfollowed: %s\n", feed.Name)
+
+	return nil
+}
+
 func handlerFeeds(s *state, cmd command) error {
 	if len(cmd.args) != 0 {
 		return errors.New("usage: feeds")
@@ -306,6 +331,7 @@ func main() {
 	cmds.register("feeds", handlerFeeds)
 	cmds.register("follow", middlewareLoggedIn(handlerFollow))
 	cmds.register("following", middlewareLoggedIn(handlerFollowing))
+	cmds.register("unfollow", middlewareLoggedIn(handlerUnfollow))
 
 	cmd := command{
 		name: os.Args[1],

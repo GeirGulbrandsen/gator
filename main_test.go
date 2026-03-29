@@ -24,11 +24,13 @@ type fakeDB struct {
 	getFeedByURLFn          func(context.Context, string) (database.Feed, error)
 	createFeedFollowFn      func(context.Context, database.CreateFeedFollowParams) (database.CreateFeedFollowRow, error)
 	getFeedFollowsForUserFn func(context.Context, uuid.UUID) ([]database.GetFeedFollowsForUserRow, error)
+	deleteFeedFollowFn      func(context.Context, database.DeleteFeedFollowParams) error
 
 	createFeedCalls            []database.CreateFeedParams
 	createFeedFollowCalls      []database.CreateFeedFollowParams
 	getFeedByURLCalls          []string
 	getFeedFollowsForUserCalls []uuid.UUID
+	deleteFeedFollowCalls      []database.DeleteFeedFollowParams
 	resetUsersCalled           bool
 }
 
@@ -98,6 +100,14 @@ func (f *fakeDB) GetFeedFollowsForUser(ctx context.Context, userID uuid.UUID) ([
 		return f.getFeedFollowsForUserFn(ctx, userID)
 	}
 	return nil, errors.New("not implemented")
+}
+
+func (f *fakeDB) DeleteFeedFollow(ctx context.Context, params database.DeleteFeedFollowParams) error {
+	f.deleteFeedFollowCalls = append(f.deleteFeedFollowCalls, params)
+	if f.deleteFeedFollowFn != nil {
+		return f.deleteFeedFollowFn(ctx, params)
+	}
+	return nil
 }
 
 func captureOutput(t *testing.T, fn func()) string {
@@ -175,6 +185,11 @@ func TestHandlerArgValidation(t *testing.T) {
 			name:    "following takes no args",
 			handler: middlewareLoggedIn(handlerFollowing),
 			cmd:     command{name: "following", args: []string{"extra"}},
+		},
+		{
+			name:    "unfollow requires url",
+			handler: middlewareLoggedIn(handlerUnfollow),
+			cmd:     command{name: "unfollow", args: []string{}},
 		},
 	}
 
@@ -401,5 +416,39 @@ func TestHandlerAddFeedReturnsErrorWhenAutoFollowFails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "auto follow feed") {
 		t.Fatalf("expected auto follow context in error, got: %v", err)
+	}
+}
+
+func TestHandlerUnfollowDeletesFeedFollowByUserAndFeedID(t *testing.T) {
+	currentUserID := uuid.New()
+	feedID := uuid.New()
+	url := "https://example.com/feed"
+
+	fdb := &fakeDB{
+		getUserFn: func(context.Context, string) (database.User, error) {
+			return database.User{ID: currentUserID, Name: "alice"}, nil
+		},
+		getFeedByURLFn: func(context.Context, string) (database.Feed, error) {
+			return database.Feed{ID: feedID, Name: "Example Feed"}, nil
+		},
+	}
+	s := &state{db: fdb, cfg: &config.Config{CurrentUserName: "alice"}}
+
+	err := middlewareLoggedIn(handlerUnfollow)(s, command{name: "unfollow", args: []string{url}})
+	if err != nil {
+		t.Fatalf("handlerUnfollow returned error: %v", err)
+	}
+
+	if len(fdb.getFeedByURLCalls) != 1 || fdb.getFeedByURLCalls[0] != url {
+		t.Fatalf("expected GetFeedByURL to be called with %q, got %+v", url, fdb.getFeedByURLCalls)
+	}
+	if len(fdb.deleteFeedFollowCalls) != 1 {
+		t.Fatalf("expected one DeleteFeedFollow call, got %d", len(fdb.deleteFeedFollowCalls))
+	}
+	if fdb.deleteFeedFollowCalls[0].UserID != currentUserID {
+		t.Fatalf("expected delete user id %s, got %s", currentUserID, fdb.deleteFeedFollowCalls[0].UserID)
+	}
+	if fdb.deleteFeedFollowCalls[0].FeedID != feedID {
+		t.Fatalf("expected delete feed id %s, got %s", feedID, fdb.deleteFeedFollowCalls[0].FeedID)
 	}
 }
